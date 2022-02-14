@@ -74,6 +74,7 @@ This package was inspired by GitHub's ruby scientist: https://github.com/github/
 package scientist
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -207,4 +208,48 @@ func gatherResult(ctx context.Context, e Experiment, control *Observation, candi
 	}
 
 	return result
+}
+
+func RunAsyncCandidateOnlyWithContext(ctx context.Context, e Experiment) (interface{}, error) {
+	var (
+		controlBehavior = "__control__"
+	)
+	c := e.Control()
+
+	if c == nil {
+		return "", controlDoesNotExist{}
+	}
+
+	behaviors := e.Shuffle()
+
+	// run only the control behavior if the
+	// experiment is not enabled or there are
+	// no more behaviors.
+	if !e.IsEnabled(ctx) || len(behaviors) == 1 {
+		return c(ctx)
+	}
+	control := observe(ctx, controlBehavior, e.Control())
+
+	go func(control *Observation) {
+		var candidateBehaviors []string
+		for _, bn := range behaviors {
+			if bn != controlBehavior {
+				candidateBehaviors = append(candidateBehaviors, bn)
+			}
+		}
+		_, candidates := runExperiment(ctx, e, candidateBehaviors)
+
+		result := gatherResult(ctx, e, control, candidates)
+
+		if err := e.Publish(ctx, result); err != nil {
+			fmt.Println("Failed to publish the results err:%s", err.Error())
+		}
+
+		if ErrorOnMismatch && len(result.Mistmaches) > 0 {
+			fmt.Println("Mismatch results %v", MismatchError{result})
+		}
+
+	}(control)
+
+	return control.Value, control.Error
 }
